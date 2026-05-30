@@ -130,6 +130,31 @@ class PolymarketClient:
             log.warning("Gamma search failed for %r: %s", query, exc)
             return []
 
+    def get_market(self, market_id: str) -> Dict[str, Any]:
+        """Fetch a single market by its Gamma id (best-effort).
+
+        Used for position reconciliation (checking if a market has resolved).
+        Returns {} on any error so callers can simply skip.
+        """
+        if not market_id:
+            return {}
+        try:
+            resp = self.session.get(
+                f"{self.config.gamma_base_url}/markets/{market_id}",
+                timeout=_HTTP_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, list):
+                return data[0] if data else {}
+            if isinstance(data, dict):
+                # Some responses wrap the object under "data".
+                return data.get("data") or data
+            return {}
+        except (requests.RequestException, ValueError) as exc:
+            log.debug("Gamma get_market failed for %s: %s", market_id, exc)
+            return {}
+
     # ================================================================== #
     # CLOB API - order book                                              #
     # ================================================================== #

@@ -34,16 +34,17 @@ from database import Database
 from orderbook_analyzer import OrderBookAnalyzer
 from polymarket_client import PolymarketClient
 from risk_manager import RiskManager
-from temperature_predictor import Prediction, TemperaturePredictor
+from temperature_predictor import TemperaturePredictor
 from trader import Trader
 from utils import (
+    SKIP_LOW_CONFIDENCE,
     SKIP_NO_ORDERBOOK,
-    SKIP_NOT_TEMPERATURE,
+    SKIP_PARSE_FAILED,
     TRADE_HIGH_CONFIDENCE,
     fmt_money,
     fmt_pct,
     geometric_mean,
-    get_logger,
+    safe_float,
     setup_logging,
     utcnow,
 )
@@ -99,6 +100,10 @@ class WeatherBot:
         if self.risk.trading_halted():
             self.log.warning("Trading halted for today (daily loss limit). Scanning only, no trades.")
 
+        # Settle any open positions whose markets have resolved (frees up slots
+        # and feeds realized P&L into the daily-loss circuit breaker).
+        self.reconcile_positions()
+
         raw_markets = self.client.get_active_markets()
         counters.fetched = len(raw_markets)
 
@@ -114,6 +119,83 @@ class WeatherBot:
         self.db.bump_daily("markets_scanned", counters.temperature)
         self.log.info("=== Scan pass complete: %s ===", counters.summary())
         return counters
+
+    # ------------------------------------------------------------------ #
+    # Position reconciliation / settlement                               #
+    # ------------------------------------------------------------------ #
+    def reconcile_positions(self) -> int:
+        """Close OPEN positions whose markets have unambiguously resolved.
+
+        Conservative by design: a position is only settled when the market is
+        marked closed AND the outcome prices are effectively 0/1. Anything
+        ambiguous is left open. Realized P&L is fed into the daily-loss
+        circuit breaker. Returns the number of positions settled.
+
+        For DRY_RUN/simulated positions we still reconcile so the simulation
+        mirrors how live settlement would behave (and frees position slots).
+        """
+        settled = 0
+        try:
+            open_positions = self.db.get_open_positions()
+        except Exception as exc:  # pragma: no cover - defensive
+            self.log.warning("Could not load open positions for reconcile: %s", exc)
+            return 0
+
+        for pos in open_positions:
+            market_id = pos["market_id"]
+            try:
+                market = self.client.get_market(market_id)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.log.debug("reconcile: get_market failed for %s: %s", market_id, exc)
+                continue
+            if not market:
+                continue
+
+            closed = str(market.get("closed")).lower() in {"true", "1"} or market.get("closed") is True
+            if not closed:
+                continue
+
+            labels = self.scanner._maybe_json_list(
+                market.get("outcomes")
+            )
+            prices = self.scanner._maybe_json_list(
+                market.get("outcomePrices") or market.get("outcome_prices")
+            )
+            if not labels or not prices or len(labels) != len(prices):
+                continue
+
+            our_outcome = (pos["outcome"] or "").upper()
+            win_price = None
+            for lbl, pr in zip(labels, prices):
+                if str(lbl).upper() == our_outcome:
+                    win_price = safe_float(pr)
+                    break
+            if win_price is None:
+                continue
+
+            # Only settle on an unambiguous resolution (price pinned to 0 or 1).
+            if win_price >= 0.99:
+                payout = 1.0
+            elif win_price <= 0.01:
+                payout = 0.0
+            else:
+                continue  # not clearly resolved yet; leave the position open
+
+            entry = pos["entry_price"] or 0.0
+            size = pos["size"] or 0.0
+            realized_pnl = round((payout - entry) * size, 4)
+            self.db.close_position(pos["id"], payout, realized_pnl)
+            self.risk.record_realized_pnl(realized_pnl)
+            settled += 1
+            self.log.info(
+                "SETTLED position #%s | %s | outcome=%s payout=%.0f pnl=%s",
+                pos["id"], (pos["title"] or "")[:50], our_outcome, payout,
+                fmt_money(realized_pnl),
+            )
+
+        if settled:
+            self.log.info("Reconciled %d resolved position(s).", settled)
+        return settled
 
     # ------------------------------------------------------------------ #
     # Per-market pipeline                                                #
@@ -134,7 +216,7 @@ class WeatherBot:
         }
 
         if not pm.parse_ok:
-            self._finalize_skip(pm, None, None, "SKIP_PARSE_FAILED", scan_row, counters)
+            self._finalize_skip(pm, None, None, SKIP_PARSE_FAILED, scan_row, counters)
             return
         counters.parsed_ok += 1
 
@@ -162,7 +244,13 @@ class WeatherBot:
 
         # --- Order book + microstructure ------------------------------
         metrics = None
-        if prediction.is_trade and token_id:
+        if prediction.is_trade:
+            # Defensive: a trade with no resolvable token cannot be executed.
+            if not token_id:
+                self._finalize_skip(
+                    pm, prediction, None, SKIP_PARSE_FAILED, scan_row, counters
+                )
+                return
             book = self.client.get_order_book(token_id)
             metrics = self.book_analyzer.analyze(book)
             if not metrics.ok:
@@ -176,15 +264,15 @@ class WeatherBot:
             )
             # If the recomputed confidence now fails, downgrade to a skip.
             if prediction.confidence_score < self.config.min_confidence_score:
-                prediction.decision = "SKIP_LOW_CONFIDENCE"
-                prediction.skip_reason = "SKIP_LOW_CONFIDENCE"
+                prediction.decision = SKIP_LOW_CONFIDENCE
+                prediction.skip_reason = SKIP_LOW_CONFIDENCE
 
         counters.evaluated += 1
 
         # --- If not a trade, record the skip --------------------------
         if not prediction.is_trade:
             self._finalize_skip(
-                pm, prediction, metrics, prediction.skip_reason or "SKIP_LOW_CONFIDENCE",
+                pm, prediction, metrics, prediction.skip_reason or SKIP_LOW_CONFIDENCE,
                 scan_row, counters,
             )
             return

@@ -191,13 +191,28 @@ def parse_temperature(text: str) -> Optional[tuple[float, str]]:
 
 
 def detect_temp_unit(text: str) -> Optional[str]:
-    """Return 'C' or 'F' if the text explicitly mentions a unit, else None."""
+    """Return 'C' or 'F' if the text explicitly mentions a unit, else None.
+
+    We require the unit letter to be attached to a degree symbol or a number
+    (e.g. "30F", "30 °f", "°C") - a bare "f"/"c" is NOT enough, otherwise common
+    words like "of" or "forecast" would be mis-read as Fahrenheit/Celsius.
+    """
     if not text:
         return None
     lowered = text.lower()
-    if re.search(r"°?\s*f\b|fahrenheit", lowered):
+    # Fahrenheit: the word, or "°f", or a number immediately followed by f.
+    if (
+        re.search(r"\bfahrenheit\b", lowered)
+        or "\u00b0f" in lowered
+        or re.search(r"\d\s*\u00b0?\s*f\b", lowered)
+    ):
         return "F"
-    if re.search(r"°?\s*c\b|celsius", lowered):
+    # Celsius: the word, or "°c", or a number immediately followed by c.
+    if (
+        re.search(r"\bcelsius\b", lowered)
+        or "\u00b0c" in lowered
+        or re.search(r"\d\s*\u00b0?\s*c\b", lowered)
+    ):
         return "C"
     return None
 
