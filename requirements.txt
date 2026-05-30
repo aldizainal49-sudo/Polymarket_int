@@ -1,0 +1,22 @@
+# Polymarket Weather/Temperature Trading Bot - dependencies
+# Python 3.11+
+
+# HTTP client for Gamma API, CLOB REST fallback, and weather providers
+requests>=2.31.0
+
+# Environment configuration
+python-dotenv>=1.0.1
+
+# Official Polymarket CLOB client (order signing + execution)
+py-clob-client>=0.17.0
+
+# Ethereum signing primitives (used by py-clob-client; pinned loosely)
+web3>=6.15.0
+eth-account>=0.11.0
+
+# Timezone handling for resolution windows
+python-dateutil>=2.9.0
+tzdata>=2024.1
+
+# Nicer CLI tables for `status`, `positions`, `pnl`, `rejected`
+tabulate>=0.9.0

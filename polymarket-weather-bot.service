@@ -1,0 +1,39 @@
+[Unit]
+Description=Polymarket Weather/Temperature Trading Bot (conservative, high-confidence)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# --- Run as a non-root user (create one: sudo adduser --system --group polybot) ---
+User=polybot
+Group=polybot
+
+# --- Adjust these two paths to where you cloned the repo --------------------
+WorkingDirectory=/home/polybot/Polymarket_int
+# Use the venv's python so all dependencies are available.
+ExecStart=/home/polybot/Polymarket_int/venv/bin/python main.py dry-run
+
+# --- Resilience -------------------------------------------------------------
+# Restart on failure, but back off so we never hammer the APIs.
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Send stdout/stderr to the journal (view with: journalctl -u polymarket-weather-bot).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polymarket-weather-bot
+
+# --- Hardening (optional but recommended) -----------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+# The bot writes its SQLite DB and log file inside WorkingDirectory, so allow it:
+ReadWritePaths=/home/polybot/Polymarket_int
+
+[Install]
+WantedBy=multi-user.target

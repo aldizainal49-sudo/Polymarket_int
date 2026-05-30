@@ -1,0 +1,30 @@
+# Secrets - NEVER commit your real .env (controls real funds)
+.env
+
+# Local database & logs
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+weather_bot.db
+weather_bot.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
